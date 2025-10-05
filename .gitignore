@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyc
+
+# Virtual environments
+venv/
+.venv/
+
+# Logs and cache
+*.log
+reorganize.log
+.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Env and secrets
+.env
+*.key
+
+# IDE
+.vscode/
+.idea/
+
+# Byte-compiled / optimized / DLL files
+*.so
+*.dll
+*.dylib
