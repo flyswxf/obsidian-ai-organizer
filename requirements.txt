@@ -1,19 +1,13 @@
-# reOrganizeObsidian 项目依赖
 
-# 基础依赖
 pathlib2>=2.3.7
 
-# AI接口相关（可选）
 openai>=1.0.0
 requests>=2.28.0
 Pillow>=9.0.0
 
-# 图像处理（用于分析图片内容）
 opencv-python>=4.5.0
 numpy>=1.21.0
 
-# 配置文件处理
 pyyaml>=6.0
 
-# 进度条显示
 tqdm>=4.64.0

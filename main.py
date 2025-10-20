@@ -17,7 +17,7 @@ import shutil
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 import argparse
 from dataclasses import dataclass
 from tqdm import tqdm
@@ -115,8 +115,9 @@ class ObsidianReorganizer:
         
         try:
             with open(markdown_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                
+                content = f.read()
+            lines = content.splitlines()
+            
             for line_num, line in enumerate(lines, 1):
                 matches = self.image_pattern.findall(line)
                 for match in matches:
@@ -129,10 +130,9 @@ class ObsidianReorganizer:
                     else:
                         continue
                     
-                    # 获取上下文（前后各2行）
-                    start_line = max(0, line_num - 3)
-                    end_line = min(len(lines), line_num + 2)
-                    context = ''.join(lines[start_line:end_line]).strip()
+                    # 使用全文上下文并标注图片在文件中的位置
+                    position_info = f"图片位于第{line_num}行：{line.strip()}"
+                    context = f"{content}\n\n[位置信息]\n{position_info}"
                     
                     # 查找图片文件
                     image_path = self.find_image_file(image_name)
@@ -145,7 +145,6 @@ class ObsidianReorganizer:
                             line_number=line_num
                         )
                         references.append(ref)
-                        
         except Exception as e:
             logging.error(f"处理文件 {markdown_file} 时出错: {e}")
             
@@ -182,6 +181,53 @@ class ObsidianReorganizer:
         end = min(len(lines), image_line_idx + window_size + 1)
         
         return '\n'.join(lines[start:end])
+
+    def extract_image_links(self, markdown_file: Path) -> List[Tuple[str, int]]:
+        """提取markdown文件中的所有图片引用（不检查文件是否存在）"""
+        links: List[Tuple[str, int]] = []
+        try:
+            with open(markdown_file, 'r', encoding='utf-8') as f:
+                lines = f.read().splitlines()
+            for line_num, line in enumerate(lines, 1):
+                matches = self.image_pattern.findall(line)
+                for match in matches:
+                    if match[0]:
+                        links.append((match[0], line_num))
+                    elif match[2]:
+                        links.append((match[2], line_num))
+        except Exception as e:
+            logging.error(f"提取文件 {markdown_file} 的图片链接时出错: {e}")
+        return links
+
+    def audit_missing_images(self) -> List[Dict[str, Any]]:
+        """审计所有markdown中的图片链接，记录缺失情况并写入日志"""
+        missing: List[Dict[str, Any]] = []
+        markdown_files = self.scan_markdown_files()
+        log_path = Path('missing_images.log')
+
+        for md_file in markdown_files:
+            links = self.extract_image_links(md_file)
+            for image_name, line_num in links:
+                found = self.find_image_file(image_name)
+                if not found:
+                    missing.append({
+                        'markdown_file': str(md_file),
+                        'image_name': image_name,
+                        'line_number': line_num
+                    })
+        try:
+            from datetime import datetime
+            with open(log_path, 'a', encoding='utf-8') as logf:
+                logf.write(f"\n==== 缺失图片链接审计 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ====\n")
+                logf.write(f"Obsidian根目录: {self.obsidian_root}\n")
+                logf.write(f"缺失数量: {len(missing)}\n")
+                for item in missing:
+                    logf.write(
+                        f"- 缺失引用: '{item['image_name']}' | 来源: {item['markdown_file']} | 行: {item['line_number']}\n"
+                    )
+        except Exception as e:
+            logging.error(f"写入审计日志失败: {e}")
+        return missing
     
     def organize_images(self, dry_run: bool = False) -> Dict[str, str]:
         """整理图片到对应的文件夹"""
@@ -213,11 +259,49 @@ class ObsidianReorganizer:
                 # 生成新的图片名称（如果有AI接口）
                 new_image_name = self.generate_new_image_name(ref)
                 
-                # 确定新的图片路径
+                # 先获取扩展名
                 image_ext = Path(ref.image_path).suffix
+
+                # 若AI返回与原文件名一致，视为已符合标准，跳过重命名
+                original_stem = Path(ref.image_path).stem
+                # 仅当AI返回与当前文件名完全一致时，认为已符合标准并跳过重命名
+                if new_image_name == original_stem:
+                    same_name_target = target_dir / f"{original_stem}{image_ext}"
+                    # 如果目标路径与当前路径相同，则无需移动
+                    if Path(ref.image_path).absolute() == same_name_target.absolute():
+                        logging.info(f"文件名已符合标准且位置正确，无需处理: {same_name_target}")
+                        results[ref.image_path] = str(same_name_target)
+                        # 不更新markdown引用（名称未变）
+                        continue
+                    # 若目标文件夹中已存在同名但不同文件，则走冲突重命名逻辑
+                    if same_name_target.exists():
+                        existing_names = [p.stem for p in target_dir.glob(f"*{image_ext}")]
+                        hint = f"当前文件名已符合规范，但目标文件夹中已有同名文件。\n新名称必须与『{original_stem}』不同；同时避免与已有文件名：{', '.join(existing_names[:10])} 重复。请生成一个不同的中文名词短语。"
+                        new_image_name = self.generate_new_image_name(ref, hint=hint)
+                        new_image_path = target_dir / f"{new_image_name}{image_ext}"
+                        # 后续冲突重试由下面逻辑处理（不立即continue）
+                    else:
+                        # 目标文件夹中无同名文件，直接按原名移动
+                        if not dry_run:
+                            shutil.move(ref.image_path, same_name_target)
+                        logging.info(f"文件名已符合标准，按原名处理: {same_name_target.name}")
+                        results[ref.image_path] = str(same_name_target)
+                        # 不更新markdown引用（名称未变）
+                        continue
+
+                # 确定新的图片路径
                 new_image_path = target_dir / f"{new_image_name}{image_ext}"
                 
-                # 避免文件名冲突
+                # 若发生同名，优先让AI重新生成不同名称（最多重试3次）
+                attempts = 0
+                while new_image_path.exists() and attempts < 3:
+                    existing_names = [p.stem for p in target_dir.glob(f"*{image_ext}")]
+                    hint = f"新名称必须与『{new_image_name}』不同；同时避免与已有文件名：{', '.join(existing_names[:10])} 重复。请生成一个不同的中文名词短语。"
+                    new_image_name = self.generate_new_image_name(ref, hint=hint)
+                    new_image_path = target_dir / f"{new_image_name}{image_ext}"
+                    attempts += 1
+                
+                # 如果仍然冲突，则添加数字后缀避免覆盖
                 counter = 1
                 while new_image_path.exists():
                     new_image_path = target_dir / f"{new_image_name}_{counter}{image_ext}"
@@ -239,14 +323,14 @@ class ObsidianReorganizer:
                 
         return results
     
-    def generate_new_image_name(self, ref: ImageReference) -> str:
+    def generate_new_image_name(self, ref: ImageReference, hint: Optional[str] = None) -> str:
         """生成新的图片名称"""
         naming_config = config.get_naming_config()
         
         # 如果启用AI且AI服务可用
         if naming_config.get('use_ai', True) and ai_service.is_available():
             try:
-                ai_name = ai_service.generate_image_name(ref.image_path, ref.context)
+                ai_name = ai_service.generate_image_name(ref.image_path, ref.context, extra_hint=hint)
                 if ai_name:
                     logging.info(f"AI生成名称: {ai_name}")
                     return ai_name
@@ -329,6 +413,7 @@ def main():
     parser.add_argument('--ai-provider', type=str, choices=['openai', 'claude', 'ecnu', 'local'],
                         help='指定AI服务提供商')
     parser.add_argument('--ecnu-key-file', type=str, help='ECNU API密钥文件路径')
+    parser.add_argument('--audit-only', action='store_true', help='仅执行图片链接缺失检测，不移动文件')
     
     args = parser.parse_args()
     
@@ -385,6 +470,13 @@ def main():
     
     print("\n" + "="*50)
     
+    # 审计模式：仅检测缺失图片链接
+    if args.audit_only:
+        missing = reorganizer.audit_missing_images()
+        print(f"\n🔎 图片链接缺失数量: {len(missing)}")
+        print("📝 详情已写入: missing_images.log")
+        return 0
+    
     try:
         # 执行整理
         results = reorganizer.organize_images(dry_run=args.dry_run)
@@ -414,6 +506,11 @@ def main():
             for old_path, result in results.items():
                 if result.startswith('ERROR:'):
                     print(f"   {old_path}: {result}")
+        
+        # 运行完成后自动执行链接缺失审计
+        missing = reorganizer.audit_missing_images()
+        print(f"\n🔎 图片链接缺失数量: {len(missing)}")
+        print("📝 详情已写入: missing_images.log")
         
         return 0 if error_count == 0 else 1
         

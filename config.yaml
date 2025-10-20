@@ -1,7 +1,7 @@
 ai:
   api_key: ''
   base_url: ''
-  ecnu_key_file: D:\desktop\code\ICU\GraphCare\resources\ecnu.key
+  ecnu_key_file: D:\HuaweiMoveData\Users\fengl\Desktop\code\ICU\GraphCare\resources\ecnu.key
   max_tokens: 150
   model: ecnu-vl
   provider: ecnu
@@ -23,7 +23,7 @@ logging:
   level: INFO
 naming:
   fallback_strategy: context_keywords
-  max_length: 50
+  max_length: 8
   remove_special_chars: true
   replace_spaces: _
   use_ai: true
